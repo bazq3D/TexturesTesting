@@ -8,33 +8,72 @@
         WindowStartupLocation="CenterScreen"
         Title="TexturesTesting">
     
-    <Grid RowDefinitions="*,*,*,*">
-        <Menu  VerticalAlignment="Top" Background="SlateGray">
+    <Grid ColumnDefinitions="*, 1.2*" RowDefinitions="Auto, *, Auto">
+        <!-- Menu spanning across both columns at the top -->
+        <Menu Grid.Row="0" Grid.ColumnSpan="2" VerticalAlignment="Top" Background="SlateGray">
             <MenuItem Header="_File" >
                 <MenuItem Click="BtnGTAPath_OnClick" x:Name="BtnGTAPath" Header="_Select GTAV Path..."/>
                 <Separator/>
                 <MenuItem x:Name="MiExit" Click="MiExit_OnClick" Header="_Exit"/>
             </MenuItem>
         </Menu>
-        <StackPanel Grid.Row="1">
-            <Label Margin="10" FontWeight="Bold" HorizontalAlignment="Center" Content="Extraction Settings"></Label>
-            <StackPanel Spacing="30" HorizontalAlignment="Center" Orientation="Horizontal">
+
+        <!-- Left Side: Extraction settings & action buttons -->
+        <StackPanel Grid.Row="1" Grid.Column="0" Margin="15" Spacing="12">
+            <Label FontWeight="Bold" HorizontalAlignment="Center" Content="Extraction Settings"/>
+            <StackPanel Spacing="10" HorizontalAlignment="Center">
                 <CheckBox Theme="{DynamicResource CardCheckBox}" x:Name="cbExtractXml" Content="Extract as XML(s)"/>
                 <CheckBox Theme="{DynamicResource CardCheckBox}" x:Name="cbExtractTextures" Content="Extract all Textures"/>
             </StackPanel>
+            
+            <Separator Height="10" Background="Transparent"/>
+            
+            <Label FontWeight="Bold" HorizontalAlignment="Center" Content="Extraction Input"/>
+            <StackPanel Spacing="10" HorizontalAlignment="Center">
+                <ComboBox x:Name="CBoxExtractType" Height="35" Width="170" SelectedIndex="0">
+                    <ComboBoxItem Content="By YMAP(s)"/>
+                    <ComboBoxItem Content="By YTYP(s)"/>
+                    <ComboBoxItem Content="By Text file"/>
+                    <ComboBoxItem Content="By YTYP(s) + MLO Entities"/>
+                </ComboBox>
+                <Button Classes="Warning" Theme="{DynamicResource OutlineButton}" x:Name="BtnLookfor" Click="BtnLookfor_OnClick" Width="170" Height="35" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Content="Pick file"/>
+                <Button Classes="Success" Theme="{DynamicResource OutlineButton}" Width="170" Height="35" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" FontWeight="Bold" x:Name="BtnLookEnts" Click="BtnLookEnts_OnClick">Extract Assets</Button>
+            </StackPanel>
         </StackPanel>
-        <StackPanel Spacing="10" HorizontalAlignment="Center" Grid.Row="2">
-            <ComboBox x:Name="CBoxExtractType" Height="40" Width="150" SelectedIndex="0">
-                <ComboBoxItem Content="By YMAP(s)"/>
-                <ComboBoxItem Content="By YTYP(s)"/>
-                <ComboBoxItem Content="By Text file"/>
-                <ComboBoxItem Content="By YTYP(s) + MLO Entities"/>
-            </ComboBox>
-            <Button Classes="Warning" Theme="{DynamicResource OutlineButton}" x:Name="BtnLookfor" Click="BtnLookfor_OnClick" Width="150" Height="40" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Content="Pick file"/>
-            <Button Classes="Success" Theme="{DynamicResource OutlineButton}" Width="150" Height="40" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" FontWeight="Bold" x:Name="BtnLookEnts" Click="BtnLookEnts_OnClick">Extract Assets</Button>
-        </StackPanel>
-        <StackPanel VerticalAlignment="Bottom" Grid.Row="3">
-            <Label Margin="5" Classes="Blue Ghost" Theme="{DynamicResource TagLabel}" HorizontalAlignment="Center" VerticalAlignment="Center" x:Name="labelCache" Content="Waiting"/>
-        </StackPanel>
+
+        <!-- Right Side: Selected Files List & Management -->
+        <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="Auto, *, Auto" Margin="15">
+            <Label FontWeight="Bold" Content="Selected Files:" Margin="0,0,0,5"/>
+            <ListBox Grid.Row="1" x:Name="LbSelectedFiles" BorderThickness="1" BorderBrush="#FF444444" CornerRadius="4">
+                <!-- DataBound items will appear here -->
+            </ListBox>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,10,0,0">
+                <Button Classes="Danger" Theme="{DynamicResource OutlineButton}" Click="BtnRemoveFile_OnClick" Content="Remove"/>
+                <Button Theme="{DynamicResource OutlineButton}" Click="BtnClearFiles_OnClick" Content="Clear All"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Footer: Status and Progress Bars -->
+        <Border Grid.Row="2" Grid.ColumnSpan="2" BorderThickness="0,1,0,0" BorderBrush="#FF444444" Padding="15,8">
+            <Grid ColumnDefinitions="*, Auto" RowDefinitions="Auto">
+                <StackPanel Grid.Column="0" Spacing="2">
+                    <Grid ColumnDefinitions="Auto, *">
+                        <Label Content="Overall Progress:" FontWeight="Bold" FontSize="11" Padding="0,0,10,0"/>
+                        <Label Grid.Column="1" x:Name="LblOverallStatus" Content="No active task" FontSize="11" Padding="0"/>
+                    </Grid>
+                    <ProgressBar x:Name="PbOverall" Height="6" Minimum="0" Maximum="100" Value="0" HorizontalAlignment="Stretch" Margin="0,2,0,5"/>
+                    
+                    <Grid ColumnDefinitions="Auto, *">
+                        <Label Content="Current File Assets:" FontWeight="Bold" FontSize="11" Padding="0,0,10,0"/>
+                        <Label Grid.Column="1" x:Name="LblItemsStatus" Content="Waiting" FontSize="11" Padding="0"/>
+                    </Grid>
+                    <ProgressBar x:Name="PbItems" Height="6" Minimum="0" Maximum="100" Value="0" HorizontalAlignment="Stretch" Margin="0,2,0,0"/>
+                </StackPanel>
+                
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="15,0,0,0">
+                    <Label Classes="Blue Ghost" Theme="{DynamicResource TagLabel}" x:Name="labelCache" Content="Waiting" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

@@ -25,6 +25,10 @@ public partial class MainWindow : Window
     private static string? _vPath;
     private GameFileCache _gameFileCache;
     private static readonly ExtractTask _globalExtractTask = new();
+    private readonly System.Collections.ObjectModel.ObservableCollection<string> _selectedFileNames = new();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool FlashWindow(IntPtr hwnd, bool bInvert);
 
     private string config = AppDomain.CurrentDomain.BaseDirectory + @"config.ini";
 
@@ -33,6 +37,62 @@ public partial class MainWindow : Window
         InitializeComponent();
         ToggleControls(false);
         BtnLookEnts.IsEnabled = false;
+        LbSelectedFiles.ItemsSource = _selectedFileNames;
+    }
+
+    protected override async void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+        await InitializeGtaPathOnStartup();
+    }
+
+    private async Task InitializeGtaPathOnStartup()
+    {
+        var cfg = new ConfigParser(config);
+        string? configGtaPath = cfg.GetValue("CONFIG", "GTA5Path");
+        string? targetPath = null;
+
+        if (!string.IsNullOrEmpty(configGtaPath) && IsGtaPathValid(configGtaPath))
+        {
+            targetPath = configGtaPath.Trim(' ', '"', '\'', '\r', '\n');
+        }
+        else
+        {
+            var detectedPath = DetectGta5Path();
+            if (!string.IsNullOrEmpty(detectedPath))
+            {
+                targetPath = detectedPath.Trim(' ', '"', '\'', '\r', '\n');
+                cfg.SetValue("CONFIG", "GTA5Path", targetPath);
+                cfg.Save();
+            }
+        }
+
+        if (!string.IsNullOrEmpty(targetPath) && IsGtaPathValid(targetPath))
+        {
+            _vPath = targetPath.Trim(' ', '"', '\'', '\r', '\n');
+            var loadMods = false;
+            var questionBox = MessageBoxManager.GetMessageBoxStandard("Information", "Do you want to enable mods?",
+                ButtonEnum.YesNo,
+                MsBox.Avalonia.Enums.Icon.Info);
+            var result = await questionBox.ShowAsync();
+            GTA5Keys.LoadFromPath(_vPath);
+            labelCache.Content = "Loading...";
+            if (result == ButtonResult.Yes)
+            {
+                loadMods = true;
+            }
+            _gameFileCache = new GameFileCache(int.MaxValue, 10, _vPath, "mp2024_01_g9ec", loadMods, "Installers;_CommonRedist")
+            {
+                LoadAudio = false,
+                LoadVehicles = false,
+                LoadPeds = false
+            };
+            await Task.Run(() => _gameFileCache.Init(UpdateStatusCache, UpdateErrorLog));
+            if (!_gameFileCache.IsInited) return;
+            ToggleControls(true);
+            labelCache.Content = "Game Cache Loaded";
+            BtnGTAPath.IsEnabled = false;
+        }
     }
 
     private void ToggleControls(bool state)
@@ -53,20 +113,30 @@ public partial class MainWindow : Window
 
         if (!string.IsNullOrEmpty(configGtaPath) && IsGtaPathValid(configGtaPath))
         {
-            _vPath = configGtaPath;
+            _vPath = configGtaPath.Trim(' ', '"', '\'', '\r', '\n');
         }
         else
         {
-            var selectGtaPath = await GetTopLevel(this)!.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions()
+            var detectedPath = DetectGta5Path();
+            if (!string.IsNullOrEmpty(detectedPath))
             {
-                Title = "Select your GTA V Path",
-                AllowMultiple = false,
-            });
+                _vPath = detectedPath.Trim(' ', '"', '\'', '\r', '\n');
+                cfg.SetValue("CONFIG", "GTA5Path", _vPath);
+                cfg.Save();
+            }
+            else
+            {
+                var selectGtaPath = await GetTopLevel(this)!.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions()
+                {
+                    Title = "Select your GTA V Path",
+                    AllowMultiple = false,
+                });
 
-            if (selectGtaPath.Count == 0) return;
-            _vPath = selectGtaPath[0].Path.LocalPath;
-            cfg.SetValue("CONFIG", "GTA5Path", _vPath);
-            cfg.Save();
+                if (selectGtaPath.Count == 0) return;
+                _vPath = selectGtaPath[0].Path.LocalPath.Trim(' ', '"', '\'', '\r', '\n');
+                cfg.SetValue("CONFIG", "GTA5Path", _vPath);
+                cfg.Save();
+            }
         }
 
         if (IsGtaPathValid(_vPath))
@@ -105,12 +175,108 @@ public partial class MainWindow : Window
 
     private static bool IsGtaPathValid(string? path)
     {
-        return File.Exists(path + "\\GTA5.exe");
+        if (string.IsNullOrEmpty(path)) return false;
+        path = path.Trim(' ', '"', '\'', '\r', '\n');
+        return File.Exists(Path.Combine(path, "GTA5.exe"));
+    }
+
+    private static string? DetectGta5Path()
+    {
+#pragma warning disable CA1416
+        try
+        {
+            // 1. Check Rockstar Games Registry
+            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Wow6432Node\Rockstar Games\Grand Theft Auto V"))
+            {
+                var path = key?.GetValue("InstallFolder") as string;
+                if (!string.IsNullOrEmpty(path) && IsGtaPathValid(path)) return path.Trim(' ', '"', '\'', '\r', '\n');
+            }
+
+            // 2. Check Steam Registry for Steam install path, then check steamapps/common/Grand Theft Auto V and libraryfolders.vdf
+            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Wow6432Node\Valve\Steam"))
+            {
+                var steamPath = key?.GetValue("InstallPath") as string;
+                if (!string.IsNullOrEmpty(steamPath))
+                {
+                    steamPath = steamPath.Trim(' ', '"', '\'', '\r', '\n');
+                    var path = Path.Combine(steamPath, "steamapps", "common", "Grand Theft Auto V");
+                    if (IsGtaPathValid(path)) return path;
+
+                    var libraryFoldersVdf = Path.Combine(steamPath, "steamapps", "libraryfolders.vdf");
+                    if (File.Exists(libraryFoldersVdf))
+                    {
+                        try
+                        {
+                            var vdfContent = File.ReadAllText(libraryFoldersVdf);
+                            var matches = System.Text.RegularExpressions.Regex.Matches(vdfContent, @"\""path\""\s*\""([^\""]+)\""");
+                            foreach (System.Text.RegularExpressions.Match match in matches)
+                            {
+                                if (match.Success)
+                                {
+                                    var libPath = match.Groups[1].Value.Replace(@"\\", @"\").Trim(' ', '"', '\'', '\r', '\n');
+                                    var customPath = Path.Combine(libPath, "steamapps", "common", "Grand Theft Auto V");
+                                    if (IsGtaPathValid(customPath)) return customPath;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            // 3. Epic Games Store install detection
+            var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+            var epicManifestsFolder = Path.Combine(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
+            if (Directory.Exists(epicManifestsFolder))
+            {
+                foreach (var file in Directory.GetFiles(epicManifestsFolder, "*.item"))
+                {
+                    try
+                    {
+                        var content = File.ReadAllText(file);
+                        if (content.Contains("\"MandatoryAppFolderName\": \"GTAV\"") || content.Contains("\"AppName\": \"GrandTheftAutoV\""))
+                        {
+                            var match = System.Text.RegularExpressions.Regex.Match(content, @"\""InstallLocation\""\s*:\s*\""([^\""]+)\""");
+                            if (match.Success)
+                            {
+                                var path = match.Groups[1].Value.Replace(@"\\", @"\").Trim(' ', '"', '\'', '\r', '\n');
+                                if (IsGtaPathValid(path)) return path;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+
+        return null;
+#pragma warning restore CA1416
     }
 
     private void UpdateStatusCache(string text)
     {
         Dispatcher.UIThread.InvokeAsync(() => { labelCache.Content = text; });
+    }
+
+    private void UpdateOverallProgress(double value, double max, string statusText)
+    {
+        Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            PbOverall.Maximum = max;
+            PbOverall.Value = value;
+            LblOverallStatus.Content = statusText;
+        });
+    }
+
+    private void UpdateItemsProgress(double value, double max, string statusText)
+    {
+        Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            PbItems.Maximum = max;
+            PbItems.Value = value;
+            LblItemsStatus.Content = statusText;
+        });
     }
     
     private void UpdateErrorLog(string text)
@@ -137,151 +303,228 @@ public partial class MainWindow : Window
     private async void BtnLookEnts_OnClick(object? sender, RoutedEventArgs e)
     {
         ToggleControls(false);
-        if (_globalExtractTask.MapFiles.Count > 0)
+        BtnLookEnts.IsEnabled = false;
+
+        try
         {
-            var msBoxExtractPath = MessageBoxManager.GetMessageBoxStandard($"Information",
-                $"Select the folder where you want to save the files", ButtonEnum.Ok,
-                MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-            var result = await msBoxExtractPath.ShowAsync();
-
-            var selectFolder = await GetTopLevel(this)!.StorageProvider.OpenFolderPickerAsync(
-                new FolderPickerOpenOptions { Title = "Select the folder where you want to save the files", AllowMultiple = false });
-
-            if (selectFolder is null || selectFolder.Count == 0) { ToggleControls(true); return; }
-
-            string? outputPath = selectFolder[0].Path.LocalPath;
-            if (string.IsNullOrWhiteSpace(outputPath)) { ToggleControls(true); return; }
-            if (string.IsNullOrEmpty(outputPath)) return;
-            foreach (var mapFile in _globalExtractTask.MapFiles)
+            if (_globalExtractTask.MapFiles.Count > 0)
             {
-                var ymapFolderPath = $"{outputPath}\\{Path.GetFileNameWithoutExtension(mapFile.FileName)}";
-                Directory.CreateDirectory(ymapFolderPath);
+                var selectFolder = await GetTopLevel(this)!.StorageProvider.OpenFolderPickerAsync(
+                    new FolderPickerOpenOptions { Title = "Select the folder where you want to save the files", AllowMultiple = false });
 
-                foreach (var entity in mapFile.EntsHashes)
+                if (selectFolder is null || selectFolder.Count == 0)
                 {
-                    ModelType mt = new();
-                    if (_gameFileCache.GetYdr(entity) != null)
-                    {
-                        var ydr = _gameFileCache.GetYdr(entity);
-                        ydr.Load(ydr.RpfFileEntry.File.ExtractFile(ydr.RpfFileEntry), ydr.RpfFileEntry);
-                        mt.YdrFiles.Add(ydr);
-                    }
+                    ToggleControls(true);
+                    BtnLookEnts.IsEnabled = true;
+                    return;
+                }
 
-                    if (_gameFileCache.GetYdd(GetYddFromHash(entity)) != null)
-                    {
-                        var ydd = _gameFileCache.GetYdd(GetYddFromHash(entity));
-                        ydd.Load(ydd.RpfFileEntry.File.ExtractFile(ydd.RpfFileEntry), ydd.RpfFileEntry);
-                        mt.YddFiles.Add(ydd);
-                    }
+                string? outputPath = selectFolder[0].Path.LocalPath;
+                if (string.IsNullOrWhiteSpace(outputPath))
+                {
+                    ToggleControls(true);
+                    BtnLookEnts.IsEnabled = true;
+                    return;
+                }
 
-                    if (_gameFileCache.GetYft(entity) != null)
-                    {
-                        var yft = _gameFileCache.GetYft(entity);
-                        yft.Load(yft.RpfFileEntry.File.ExtractFile(yft.RpfFileEntry), yft.RpfFileEntry);
-                        mt.YftFiles.Add(yft);
-                    }
+                bool extractXml = cbExtractXml.IsChecked ?? false;
+                bool extractTextures = cbExtractTextures.IsChecked ?? false;
 
-                    if (mt.YdrFiles.Count > 0)
+                // Reset progress bars
+                UpdateOverallProgress(0, _globalExtractTask.MapFiles.Count, "Starting extraction...");
+                UpdateItemsProgress(0, 100, "Waiting...");
+
+                // Copy to process on background thread
+                var mapFilesToProcess = new List<MapTask>(_globalExtractTask.MapFiles);
+
+                await Task.Run(async () =>
+                {
+                    int totalMaps = mapFilesToProcess.Count;
+                    int currentMapIdx = 0;
+
+                    foreach (var mapFile in mapFilesToProcess)
                     {
-                        foreach (var mYdr in mt.YdrFiles)
+                        currentMapIdx++;
+                        UpdateOverallProgress(currentMapIdx - 1, totalMaps, $"Processing: {mapFile.FileName} ({currentMapIdx}/{totalMaps})");
+
+                        var ymapFolderPath = Path.Combine(outputPath, Path.GetFileNameWithoutExtension(mapFile.FileName) ?? "");
+                        Directory.CreateDirectory(ymapFolderPath);
+
+                        int totalEntities = mapFile.EntsHashes.Count;
+                        int currentEntityIdx = 0;
+
+                        if (totalEntities == 0)
                         {
-                            if (!(bool)cbExtractXml.IsChecked!)
-                            {
-                                await File.WriteAllBytesAsync($"{ymapFolderPath}\\{mYdr.Name}", mYdr.Save());
-                            }
-                            else
-                            {
-                                var ydrXml = MetaXml.GetXml(mYdr, filename: out var ydrName,
-                                    $"{ymapFolderPath}\\{mYdr.Name.Split(".")[0]}");
-                                await File.WriteAllTextAsync($"{ymapFolderPath}\\{mYdr.Name}.xml", ydrXml);
-                            }
-
-                            if (!(bool)cbExtractTextures.IsChecked!) continue;
-                            var textures = new HashSet<Texture>();
-                            var textureMissing = new HashSet<string>();
-                            var extract = Directory.CreateDirectory($"{ymapFolderPath}\\alltextures\\");
-                            if (mYdr.Drawable != null)
-                            {
-                                await Task.Run(() => CollectTextures(mYdr.Drawable, textures, textureMissing));
-                            }
-
-                            await WriteTexturesAsync(textures, extract.FullName);
+                            UpdateItemsProgress(0, 100, "No entities in this file");
                         }
-                    }
 
-                    if (mt.YddFiles.Count > 0)
-                    {
-                        foreach (var mYdd in mt.YddFiles)
+                        foreach (var entity in mapFile.EntsHashes)
                         {
-                            if (!(bool)cbExtractXml.IsChecked!)
+                            currentEntityIdx++;
+
+                            // Resolve entity name for the status label
+                            string entityName = $"0x{entity:X8}";
+                            var arch = _gameFileCache.GetArchetype(entity);
+                            if (arch != null && arch.Name != null)
                             {
-                                await File.WriteAllBytesAsync($"{ymapFolderPath}\\{mYdd.Name}", mYdd.Save());
-                            }
-                            else
-                            {
-                                var yddXml = MetaXml.GetXml(mYdd, filename: out var yddName,
-                                    $"{ymapFolderPath}\\{mYdd.Name.Split(".")[0]}");
-                                await File.WriteAllTextAsync($"{ymapFolderPath}\\{mYdd.Name}.xml", yddXml);
+                                entityName = arch.Name;
                             }
 
-                            if (!(bool)cbExtractTextures.IsChecked!) continue;
-                            var textures = new HashSet<Texture>();
-                            var textureMissing = new HashSet<string>();
-                            var extract = Directory.CreateDirectory($"{ymapFolderPath}\\alltextures\\");
-                            if (mYdd.DrawableDict != null)
+                            UpdateItemsProgress(currentEntityIdx, totalEntities, $"Extracting: {entityName} ({currentEntityIdx}/{totalEntities})");
+                            UpdateStatusCache($"Map {currentMapIdx}/{totalMaps} - {entityName}");
+
+                            ModelType mt = new();
+                            if (_gameFileCache.GetYdr(entity) != null)
                             {
-                                foreach (var dd in mYdd.Drawables)
+                                var ydr = _gameFileCache.GetYdr(entity);
+                                ydr.Load(ydr.RpfFileEntry.File.ExtractFile(ydr.RpfFileEntry), ydr.RpfFileEntry);
+                                mt.YdrFiles.Add(ydr);
+                            }
+
+                            if (_gameFileCache.GetYdd(GetYddFromHash(entity)) != null)
+                            {
+                                var ydd = _gameFileCache.GetYdd(GetYddFromHash(entity));
+                                ydd.Load(ydd.RpfFileEntry.File.ExtractFile(ydd.RpfFileEntry), ydd.RpfFileEntry);
+                                mt.YddFiles.Add(ydd);
+                            }
+
+                            if (_gameFileCache.GetYft(entity) != null)
+                            {
+                                var yft = _gameFileCache.GetYft(entity);
+                                yft.Load(yft.RpfFileEntry.File.ExtractFile(yft.RpfFileEntry), yft.RpfFileEntry);
+                                mt.YftFiles.Add(yft);
+                            }
+
+                            if (mt.YdrFiles.Count > 0)
+                            {
+                                foreach (var mYdr in mt.YdrFiles)
                                 {
-                                    await Task.Run(() => CollectTextures(dd, textures, textureMissing));
+                                    if (!extractXml)
+                                    {
+                                        await File.WriteAllBytesAsync(Path.Combine(ymapFolderPath, mYdr.Name), mYdr.Save());
+                                    }
+                                    else
+                                    {
+                                        var ydrXml = MetaXml.GetXml(mYdr, filename: out var ydrName,
+                                            Path.Combine(ymapFolderPath, mYdr.Name.Split(".")[0]));
+                                        await File.WriteAllTextAsync(Path.Combine(ymapFolderPath, $"{mYdr.Name}.xml"), ydrXml);
+                                    }
+
+                                    if (!extractTextures) continue;
+                                    var textures = new HashSet<Texture>();
+                                    var textureMissing = new HashSet<string>();
+                                    var extract = Directory.CreateDirectory(Path.Combine(ymapFolderPath, "alltextures"));
+                                    if (mYdr.Drawable != null)
+                                    {
+                                        CollectTextures(mYdr.Drawable, textures, textureMissing);
+                                    }
+
+                                    await WriteTexturesAsync(textures, extract.FullName);
                                 }
                             }
 
-                            await WriteTexturesAsync(textures, extract.FullName);
+                            if (mt.YddFiles.Count > 0)
+                            {
+                                foreach (var mYdd in mt.YddFiles)
+                                {
+                                    if (!extractXml)
+                                    {
+                                        await File.WriteAllBytesAsync(Path.Combine(ymapFolderPath, mYdd.Name), mYdd.Save());
+                                    }
+                                    else
+                                    {
+                                        var yddXml = MetaXml.GetXml(mYdd, filename: out var yddName,
+                                            Path.Combine(ymapFolderPath, mYdd.Name.Split(".")[0]));
+                                        await File.WriteAllTextAsync(Path.Combine(ymapFolderPath, $"{mYdd.Name}.xml"), yddXml);
+                                    }
+
+                                    if (!extractTextures) continue;
+                                    var textures = new HashSet<Texture>();
+                                    var textureMissing = new HashSet<string>();
+                                    var extract = Directory.CreateDirectory(Path.Combine(ymapFolderPath, "alltextures"));
+                                    if (mYdd.DrawableDict != null)
+                                    {
+                                        foreach (var dd in mYdd.Drawables)
+                                        {
+                                            CollectTextures(dd, textures, textureMissing);
+                                        }
+                                    }
+
+                                    await WriteTexturesAsync(textures, extract.FullName);
+                                }
+                            }
+
+                            if (mt.YftFiles.Count > 0)
+                            {
+                                foreach (var mYft in mt.YftFiles)
+                                {
+                                    if (!extractXml)
+                                    {
+                                        await File.WriteAllBytesAsync(Path.Combine(ymapFolderPath, mYft.Name), mYft.Save());
+                                    }
+                                    else
+                                    {
+                                        var yftXml = MetaXml.GetXml(mYft, filename: out var yftName,
+                                            Path.Combine(ymapFolderPath, mYft.Name.Split(".")[0]));
+                                        await File.WriteAllTextAsync(Path.Combine(ymapFolderPath, $"{mYft.Name}.xml"), yftXml);
+                                    }
+
+                                    if (!extractTextures) continue;
+                                    var textures = new HashSet<Texture>();
+                                    var textureMissing = new HashSet<string>();
+                                    var extract = Directory.CreateDirectory(Path.Combine(ymapFolderPath, "alltextures"));
+                                    CollectTextures(mYft.Fragment.Drawable, textures, textureMissing);
+
+                                    await WriteTexturesAsync(textures, extract.FullName);
+                                }
+                            }
                         }
+
+                        // Set current map progress to 100% after finished
+                        UpdateItemsProgress(totalEntities, totalEntities, $"Finished: {mapFile.FileName}");
                     }
 
-                    if (mt.YftFiles.Count > 0)
-                    {
-                        foreach (var mYft in mt.YftFiles)
-                        {
-                            if (!(bool)cbExtractXml.IsChecked!)
-                            {
-                                await File.WriteAllBytesAsync($"{ymapFolderPath}\\{mYft.Name}", mYft.Save());
-                            }
-                            else
-                            {
-                                var yftXml = MetaXml.GetXml(mYft, filename: out var yftName,
-                                    $"{ymapFolderPath}\\{mYft.Name.Split(".")[0]}");
-                                await File.WriteAllTextAsync($"{ymapFolderPath}\\{mYft.Name}.xml", yftXml);
-                            }
+                    UpdateOverallProgress(totalMaps, totalMaps, "All files processed successfully.");
+                });
 
-                            if (!(bool)cbExtractTextures.IsChecked!) continue;
-                            var textures = new HashSet<Texture>();
-                            var textureMissing = new HashSet<string>();
-                            var extract = Directory.CreateDirectory($"{ymapFolderPath}\\alltextures\\");
-                            await Task.Run(() => CollectTextures(mYft.Fragment.Drawable, textures, textureMissing));
+                // Clear the map files queue
+                _selectedFileNames.Clear();
+                _globalExtractTask.MapFiles.Clear();
 
-                            await WriteTexturesAsync(textures, extract.FullName);
-                        }
-                    }
+                // Play system sound and flash window to notify completion
+                SystemSoundPlayer.PlaySystemSound(SystemSoundType.Question);
+                var hwnd = this.TryGetPlatformHandle()?.Handle;
+                if (hwnd.HasValue)
+                {
+                    FlashWindow(hwnd.Value, true);
                 }
+
+                var msBoxExtract = MessageBoxManager.GetMessageBoxStandard($"Information", $"Extraction Completed",
+                    ButtonEnum.Ok,
+                    MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
+                await msBoxExtract.ShowAsync();
             }
-
-            var msBoxExtract = MessageBoxManager.GetMessageBoxStandard($"Information", $"Extraction Completed",
-                ButtonEnum.Ok,
-                MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-            await msBoxExtract.ShowAsync();
+            else
+            {
+                var noEntsMsg = MessageBoxManager.GetMessageBoxStandard($"Information", $"No Entities Detected",
+                    ButtonEnum.Ok,
+                    MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
+                await noEntsMsg.ShowAsync();
+            }
         }
-        else
+        catch (Exception ex)
         {
-            var noEntsMsg = MessageBoxManager.GetMessageBoxStandard($"Information", $"No Entities Detected",
+            var errMsg = MessageBoxManager.GetMessageBoxStandard($"Error", $"Extraction failed: {ex.Message}",
                 ButtonEnum.Ok,
-                MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-            await noEntsMsg.ShowAsync();
+                MsBox.Avalonia.Enums.Icon.Error, WindowStartupLocation.CenterScreen);
+            await errMsg.ShowAsync();
         }
-
-        ToggleControls(true);
-        labelCache.Content = "Ready";
+        finally
+        {
+            ToggleControls(true);
+            BtnLookEnts.IsEnabled = false;
+            UpdateStatusCache("Ready");
+        }
     }
 
     private void MiExit_OnClick(object? sender, RoutedEventArgs e)
@@ -452,14 +695,22 @@ public partial class MainWindow : Window
                 var ymapMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information",
                     $"Detected {ymapResult.ToList().Count} YMAP(s)", ButtonEnum.Ok,
                     MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-                if (ymapResult.Any(x => x.Name.Contains(".ymap")))
+                if (ymapResult.Any(x => x.Name.EndsWith(".ymap", StringComparison.OrdinalIgnoreCase)))
                 {
                     await ymapMsgInfo.ShowAsync();
-                    BtnLookEnts.IsEnabled = true;
                     foreach (var ymap in ymapResult)
                     {
-                        _globalExtractTask.MapFiles.Add(new MapTask(ymap.Path.LocalPath,
-                            GetEntityHashesFromFile(ymap.Path.LocalPath, 0)));
+                        var path = ymap.Path.LocalPath;
+                        var fileName = Path.GetFileName(path);
+                        if (!_selectedFileNames.Contains(fileName))
+                        {
+                            _selectedFileNames.Add(fileName);
+                            _globalExtractTask.MapFiles.Add(new MapTask(path, GetEntityHashesFromFile(path, 0)));
+                        }
+                    }
+                    if (_globalExtractTask.MapFiles.Count > 0)
+                    {
+                        BtnLookEnts.IsEnabled = true;
                     }
                 }
 
@@ -478,21 +729,30 @@ public partial class MainWindow : Window
                     $"Detected {ytypResult.ToList().Count} YTYP(s)", ButtonEnum.Ok,
                     MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
                 if (ytypResult.Count <= 0) return;
-                if (ytypResult.Any(x => x.Name.Contains(".ytyp")))
+                if (ytypResult.Any(x => x.Name.EndsWith(".ytyp", StringComparison.OrdinalIgnoreCase)))
                 {
                     await ytypMsgInfo.ShowAsync();
-                    BtnLookEnts.IsEnabled = true;
                     foreach (var ytyp in ytypResult)
                     {
                         try
                         {
-                            var hashes = GetEntityHashesFromFile(ytyp.Path.LocalPath, 1, CBoxExtractType.SelectedIndex == 3);
-                            _globalExtractTask.MapFiles.Add(new MapTask(ytyp.Path.LocalPath, hashes));
+                            var path = ytyp.Path.LocalPath;
+                            var fileName = Path.GetFileName(path);
+                            if (!_selectedFileNames.Contains(fileName))
+                            {
+                                var hashes = GetEntityHashesFromFile(path, 1, CBoxExtractType.SelectedIndex == 3);
+                                _selectedFileNames.Add(fileName);
+                                _globalExtractTask.MapFiles.Add(new MapTask(path, hashes));
+                            }
                         }
                         catch (InvalidDataException ex)
                         {
                             Debug.WriteLine($"InvalidDataException for file {ytyp.Path.LocalPath}: {ex.Message}");
                         }
+                    }
+                    if (_globalExtractTask.MapFiles.Count > 0)
+                    {
+                        BtnLookEnts.IsEnabled = true;
                     }
                 }
 
@@ -510,16 +770,46 @@ public partial class MainWindow : Window
                     ButtonEnum.Ok,
                     MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
                 if (textFileResult.Count <= 0) return;
-                if (textFileResult.Any(x => x.Name.Contains(".txt")))
+                if (textFileResult.Any(x => x.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)))
                 {
                     await textFileMsgInfo.ShowAsync();
-                    BtnLookEnts.IsEnabled = true;
-                    _globalExtractTask.MapFiles.Add(new MapTask(textFileResult[0].Path.LocalPath,
-                        GetEntityHashesFromFile(File.ReadAllLines(textFileResult[0].Path.LocalPath))));
+                    var path = textFileResult[0].Path.LocalPath;
+                    var fileName = Path.GetFileName(path);
+                    if (!_selectedFileNames.Contains(fileName))
+                    {
+                        _selectedFileNames.Add(fileName);
+                        _globalExtractTask.MapFiles.Add(new MapTask(path, GetEntityHashesFromFile(File.ReadAllLines(path))));
+                    }
+                    if (_globalExtractTask.MapFiles.Count > 0)
+                    {
+                        BtnLookEnts.IsEnabled = true;
+                    }
                 }
 
                 break;
         }
+    }
+
+    private void BtnRemoveFile_OnClick(object? sender, RoutedEventArgs e)
+    {
+        var selectedIdx = LbSelectedFiles.SelectedIndex;
+        if (selectedIdx >= 0 && selectedIdx < _selectedFileNames.Count)
+        {
+            _selectedFileNames.RemoveAt(selectedIdx);
+            _globalExtractTask.MapFiles.RemoveAt(selectedIdx);
+        }
+
+        if (_globalExtractTask.MapFiles.Count == 0)
+        {
+            BtnLookEnts.IsEnabled = false;
+        }
+    }
+
+    private void BtnClearFiles_OnClick(object? sender, RoutedEventArgs e)
+    {
+        _selectedFileNames.Clear();
+        _globalExtractTask.MapFiles.Clear();
+        BtnLookEnts.IsEnabled = false;
     }
 
     private static List<uint> GetEntityHashesFromFile(string file, int type, bool includeMloEntities = false)
