@@ -23,7 +23,7 @@ namespace TexturesTesting;
 public partial class MainWindow : Window
 {
     private static string? _vPath;
-    private GameFileCache _gameFileCache;
+    private GameFileCache _gameFileCache = null!;
     private static readonly ExtractTask _globalExtractTask = new();
     private readonly System.Collections.ObjectModel.ObservableCollection<string> _selectedFileNames = new();
 
@@ -219,7 +219,10 @@ public partial class MainWindow : Window
                                 }
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine(ex);
+                        }
                     }
                 }
             }
@@ -244,11 +247,17 @@ public partial class MainWindow : Window
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine(ex);
+                    }
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+        }
 
         return null;
 #pragma warning restore CA1416
@@ -296,8 +305,10 @@ public partial class MainWindow : Window
                 var dds = DDSIO.GetDDSFile(tex);
                 await File.WriteAllBytesAsync(fpath, dds, token);
             }
-            catch
-            { }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(ex);
+            }
         });
     }
     private async void BtnLookEnts_OnClick(object? sender, RoutedEventArgs e)
@@ -514,6 +525,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            Debug.WriteLine(ex);
             var errMsg = MessageBoxManager.GetMessageBoxStandard($"Error", $"Extraction failed: {ex.Message}",
                 ButtonEnum.Ok,
                 MsBox.Avalonia.Enums.Icon.Error, WindowStartupLocation.CenterScreen);
@@ -574,9 +586,9 @@ public partial class MainWindow : Window
         Archetype arch = _gameFileCache.GetArchetype(archhash);
         if (arch == null) return;
 
-        uint txdHash = arch.TextureDict != null ? ToUInt(arch.TextureDict.Hash) : archhash;
+        uint txdHash = arch.TextureDict.Hash != 0 ? arch.TextureDict.Hash : archhash;
 
-        var foundCache = new Dictionary<ulong, Texture>(64);
+        var foundCache = new Dictionary<ulong, Texture?>(64);
         var parentCache = new Dictionary<uint, uint>(8);
 
         uint GetParentTxd(uint h)
@@ -588,7 +600,7 @@ public partial class MainWindow : Window
             return p;
         }
 
-        Texture TryResolve(uint texHash, uint startTxd)
+        Texture? TryResolve(uint texHash, uint startTxd)
         {
             if (texHash == 0) return null;
 
@@ -680,113 +692,123 @@ public partial class MainWindow : Window
 
     private async void BtnLookfor_OnClick(object? sender, RoutedEventArgs e)
     {
-        switch (CBoxExtractType.SelectedIndex)
+        try
         {
-            case 0: // YMAPs
+            switch (CBoxExtractType.SelectedIndex)
+            {
+                case 0: // YMAPs
 
-                var ymapResult = await GetTopLevel(this)!.StorageProvider.OpenFilePickerAsync(
-                    new FilePickerOpenOptions()
+                    var ymapResult = await GetTopLevel(this)!.StorageProvider.OpenFilePickerAsync(
+                        new FilePickerOpenOptions()
+                        {
+                            Title = "Select YMAP(s) folder",
+                            AllowMultiple = true,
+                            FileTypeFilter = new[] { new FilePickerFileType("YMAP(s)") { Patterns = new[] { "*.ymap" }}}
+                        });
+                    if (ymapResult.Count <= 0) return;
+                    var ymapMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information",
+                        $"Detected {ymapResult.ToList().Count} YMAP(s)", ButtonEnum.Ok,
+                        MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
+                    if (ymapResult.Any(x => x.Name.EndsWith(".ymap", StringComparison.OrdinalIgnoreCase)))
                     {
-                        Title = "Select YMAP(s) folder",
-                        AllowMultiple = true,
-                        FileTypeFilter = new[] { new FilePickerFileType("YMAP(s)") { Patterns = new[] { "*.ymap" }}}
-                    });
-                if (ymapResult.Count <= 0) return;
-                var ymapMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information",
-                    $"Detected {ymapResult.ToList().Count} YMAP(s)", ButtonEnum.Ok,
-                    MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-                if (ymapResult.Any(x => x.Name.EndsWith(".ymap", StringComparison.OrdinalIgnoreCase)))
-                {
-                    await ymapMsgInfo.ShowAsync();
-                    foreach (var ymap in ymapResult)
+                        await ymapMsgInfo.ShowAsync();
+                        foreach (var ymap in ymapResult)
+                        {
+                            var path = ymap.Path.LocalPath;
+                            var fileName = Path.GetFileName(path);
+                            if (!_selectedFileNames.Contains(fileName))
+                            {
+                                _selectedFileNames.Add(fileName);
+                                _globalExtractTask.MapFiles.Add(new MapTask(path, GetEntityHashesFromFile(path, 0)));
+                            }
+                        }
+                        if (_globalExtractTask.MapFiles.Count > 0)
+                        {
+                            BtnLookEnts.IsEnabled = true;
+                        }
+                    }
+
+                    break;
+                case 1:
+                case 3:
+                    var ytypResult = await GetTopLevel(this)!.StorageProvider.OpenFilePickerAsync(
+                        new FilePickerOpenOptions()
+                        {
+                            Title = "Select YTYP(s) folder",
+                            AllowMultiple = true,
+                            FileTypeFilter = new[] { new FilePickerFileType("YTYP(s)") { Patterns = new[] { "*.ytyp" }}}
+                        });
+
+                    var ytypMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information",
+                        $"Detected {ytypResult.ToList().Count} YTYP(s)", ButtonEnum.Ok,
+                        MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
+                    if (ytypResult.Count <= 0) return;
+                    if (ytypResult.Any(x => x.Name.EndsWith(".ytyp", StringComparison.OrdinalIgnoreCase)))
                     {
-                        var path = ymap.Path.LocalPath;
+                        await ytypMsgInfo.ShowAsync();
+                        foreach (var ytyp in ytypResult)
+                        {
+                            try
+                            {
+                                var path = ytyp.Path.LocalPath;
+                                var fileName = Path.GetFileName(path);
+                                if (!_selectedFileNames.Contains(fileName))
+                                {
+                                    var hashes = GetEntityHashesFromFile(path, 1, CBoxExtractType.SelectedIndex == 3);
+                                    _selectedFileNames.Add(fileName);
+                                    _globalExtractTask.MapFiles.Add(new MapTask(path, hashes));
+                                }
+                            }
+                            catch (InvalidDataException ex)
+                            {
+                                Debug.WriteLine($"InvalidDataException for file {ytyp.Path.LocalPath}: {ex.Message}");
+                            }
+                        }
+                        if (_globalExtractTask.MapFiles.Count > 0)
+                        {
+                            BtnLookEnts.IsEnabled = true;
+                        }
+                    }
+
+                    break;
+                case 2:
+                    var textFileResult = await GetTopLevel(this)!.StorageProvider.OpenFilePickerAsync(
+                        new FilePickerOpenOptions()
+                        {
+                            Title = "Select Text File folder",
+                            AllowMultiple = false,
+                            FileTypeFilter = new[] { new FilePickerFileType("Text File") { Patterns = new[] { "*.txt" }}}
+                        });
+
+                    var textFileMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information", $"Valid Text File",
+                        ButtonEnum.Ok,
+                        MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
+                    if (textFileResult.Count <= 0) return;
+                    if (textFileResult.Any(x => x.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        await textFileMsgInfo.ShowAsync();
+                        var path = textFileResult[0].Path.LocalPath;
                         var fileName = Path.GetFileName(path);
                         if (!_selectedFileNames.Contains(fileName))
                         {
                             _selectedFileNames.Add(fileName);
-                            _globalExtractTask.MapFiles.Add(new MapTask(path, GetEntityHashesFromFile(path, 0)));
+                            _globalExtractTask.MapFiles.Add(new MapTask(path, GetEntityHashesFromFile(File.ReadAllLines(path))));
                         }
-                    }
-                    if (_globalExtractTask.MapFiles.Count > 0)
-                    {
-                        BtnLookEnts.IsEnabled = true;
-                    }
-                }
-
-                break;
-            case 1:
-            case 3:
-                var ytypResult = await GetTopLevel(this)!.StorageProvider.OpenFilePickerAsync(
-                    new FilePickerOpenOptions()
-                    {
-                        Title = "Select YTYP(s) folder",
-                        AllowMultiple = true,
-                        FileTypeFilter = new[] { new FilePickerFileType("YTYP(s)") { Patterns = new[] { "*.ytyp" }}}
-                    });
-
-                var ytypMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information",
-                    $"Detected {ytypResult.ToList().Count} YTYP(s)", ButtonEnum.Ok,
-                    MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-                if (ytypResult.Count <= 0) return;
-                if (ytypResult.Any(x => x.Name.EndsWith(".ytyp", StringComparison.OrdinalIgnoreCase)))
-                {
-                    await ytypMsgInfo.ShowAsync();
-                    foreach (var ytyp in ytypResult)
-                    {
-                        try
+                        if (_globalExtractTask.MapFiles.Count > 0)
                         {
-                            var path = ytyp.Path.LocalPath;
-                            var fileName = Path.GetFileName(path);
-                            if (!_selectedFileNames.Contains(fileName))
-                            {
-                                var hashes = GetEntityHashesFromFile(path, 1, CBoxExtractType.SelectedIndex == 3);
-                                _selectedFileNames.Add(fileName);
-                                _globalExtractTask.MapFiles.Add(new MapTask(path, hashes));
-                            }
-                        }
-                        catch (InvalidDataException ex)
-                        {
-                            Debug.WriteLine($"InvalidDataException for file {ytyp.Path.LocalPath}: {ex.Message}");
+                            BtnLookEnts.IsEnabled = true;
                         }
                     }
-                    if (_globalExtractTask.MapFiles.Count > 0)
-                    {
-                        BtnLookEnts.IsEnabled = true;
-                    }
-                }
 
-                break;
-            case 2:
-                var textFileResult = await GetTopLevel(this)!.StorageProvider.OpenFilePickerAsync(
-                    new FilePickerOpenOptions()
-                    {
-                        Title = "Select Text File folder",
-                        AllowMultiple = false,
-                        FileTypeFilter = new[] { new FilePickerFileType("Text File") { Patterns = new[] { "*.txt" }}}
-                    });
-
-                var textFileMsgInfo = MessageBoxManager.GetMessageBoxStandard($"Information", $"Valid Text File",
-                    ButtonEnum.Ok,
-                    MsBox.Avalonia.Enums.Icon.Info, WindowStartupLocation.CenterScreen);
-                if (textFileResult.Count <= 0) return;
-                if (textFileResult.Any(x => x.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)))
-                {
-                    await textFileMsgInfo.ShowAsync();
-                    var path = textFileResult[0].Path.LocalPath;
-                    var fileName = Path.GetFileName(path);
-                    if (!_selectedFileNames.Contains(fileName))
-                    {
-                        _selectedFileNames.Add(fileName);
-                        _globalExtractTask.MapFiles.Add(new MapTask(path, GetEntityHashesFromFile(File.ReadAllLines(path))));
-                    }
-                    if (_globalExtractTask.MapFiles.Count > 0)
-                    {
-                        BtnLookEnts.IsEnabled = true;
-                    }
-                }
-
-                break;
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+            var box = MessageBoxManager.GetMessageBoxStandard("Error", $"Failed to load file(s): {ex.Message}", ButtonEnum.Ok,
+                MsBox.Avalonia.Enums.Icon.Error, WindowStartupLocation.CenterScreen);
+            await box.ShowAsync();
         }
     }
 
@@ -820,25 +842,44 @@ public partial class MainWindow : Window
             case 0:
                 var ymapFile = new YmapFile();
                 ymapFile.Load(File.ReadAllBytes(file));
-                hashes.AddRange(ymapFile.AllEntities.Select(entity => entity._CEntityDef.archetypeName.Hash));
+                if (ymapFile.AllEntities != null)
+                {
+                    hashes.AddRange(ymapFile.AllEntities
+                        .Where(entity => entity?._CEntityDef != null)
+                        .Select(entity => entity._CEntityDef.archetypeName.Hash));
+                }
                 return hashes.Distinct().ToList();
             case 1:
                 var ytypFile = new YtypFile();
                 ytypFile.Load(File.ReadAllBytes(file));
-                hashes.AddRange(ytypFile.AllArchetypes.Select(archetype => archetype._BaseArchetypeDef.assetName.Hash));
-                if (includeMloEntities)
+                if (ytypFile.AllArchetypes != null)
                 {
-                    foreach (var archetype in ytypFile.AllArchetypes.Where(x => x.Type == MetaName.CMloArchetypeDef))
+                    hashes.AddRange(ytypFile.AllArchetypes
+                        .Where(archetype => archetype?._BaseArchetypeDef != null)
+                        .Select(archetype => archetype._BaseArchetypeDef.assetName.Hash));
+                    
+                    if (includeMloEntities)
                     {
-                        var mlo = (MloArchetype)archetype;
-                        if (mlo?.entitySets != null && mlo.entitySets.Length != 0)
+                        foreach (var archetype in ytypFile.AllArchetypes.Where(x => x != null && x.Type == MetaName.CMloArchetypeDef))
                         {
-                            hashes.AddRange(
-                                mlo.entitySets
-                                    .SelectMany(entitySet => entitySet.Entities.Select(x => x.Data.archetypeName.Hash))
-                            );
+                            var mlo = (MloArchetype)archetype;
+                            if (mlo.entitySets != null && mlo.entitySets.Length != 0)
+                            {
+                                hashes.AddRange(
+                                    mlo.entitySets
+                                        .Where(entitySet => entitySet?.Entities != null)
+                                        .SelectMany(entitySet => entitySet.Entities
+                                            .Where(x => x?.Data != null)
+                                            .Select(x => x.Data.archetypeName.Hash))
+                                );
+                            }
+                            if (mlo.entities != null)
+                            {
+                                hashes.AddRange(mlo.entities
+                                    .Where(x => x?.Data != null)
+                                    .Select(x => x.Data.archetypeName.Hash));
+                            }
                         }
-                        hashes.AddRange(mlo.entities.Select(x => x.Data.archetypeName.Hash));
                     }
                 }
 
