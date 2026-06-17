@@ -1,6 +1,6 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TexturesTesting", "TexturesTesting\TexturesTesting.csproj", "{D140DA5C-7D23-4F34-944A-9B84E03BCE19}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TexturesTesting", "TexturesTesting.csproj", "{D140DA5C-7D23-4F34-944A-9B84E03BCE19}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

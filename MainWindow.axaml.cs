@@ -356,6 +356,8 @@ public partial class MainWindow : Window
                     foreach (var mapFile in mapFilesToProcess)
                     {
                         currentMapIdx++;
+                        Console.WriteLine($"[bazq] --------------------------------------------------");
+                        Console.WriteLine($"[bazq] Processing YMAP: {mapFile.FileName} ({currentMapIdx}/{totalMaps})");
                         UpdateOverallProgress(currentMapIdx - 1, totalMaps, $"Processing: {mapFile.FileName} ({currentMapIdx}/{totalMaps})");
 
                         var ymapFolderPath = Path.Combine(outputPath, Path.GetFileNameWithoutExtension(mapFile.FileName) ?? "");
@@ -363,6 +365,8 @@ public partial class MainWindow : Window
 
                         int totalEntities = mapFile.EntsHashes.Count;
                         int currentEntityIdx = 0;
+
+                        Console.WriteLine($"[bazq] Total entities to process in this map: {totalEntities}");
 
                         if (totalEntities == 0)
                         {
@@ -385,25 +389,28 @@ public partial class MainWindow : Window
                             UpdateStatusCache($"Map {currentMapIdx}/{totalMaps} - {entityName}");
 
                             ModelType mt = new();
-                            if (_gameFileCache.GetYdr(entity) != null)
+                            var ydrEntry = _gameFileCache.GetYdr(entity);
+                            var yddEntry = _gameFileCache.GetYdd(GetYddFromHash(entity));
+                            var yftEntry = _gameFileCache.GetYft(entity);
+
+                            Console.WriteLine($"[bazq] - Entity: {entityName} (0x{entity:X8}) -> YDR: {(ydrEntry != null ? "FOUND" : "NOT FOUND")}, YDD: {(yddEntry != null ? "FOUND" : "NOT FOUND")}, YFT: {(yftEntry != null ? "FOUND" : "NOT FOUND")}");
+
+                            if (ydrEntry != null)
                             {
-                                var ydr = _gameFileCache.GetYdr(entity);
-                                ydr.Load(ydr.RpfFileEntry.File.ExtractFile(ydr.RpfFileEntry), ydr.RpfFileEntry);
-                                mt.YdrFiles.Add(ydr);
+                                ydrEntry.Load(ydrEntry.RpfFileEntry.File.ExtractFile(ydrEntry.RpfFileEntry), ydrEntry.RpfFileEntry);
+                                mt.YdrFiles.Add(ydrEntry);
                             }
 
-                            if (_gameFileCache.GetYdd(GetYddFromHash(entity)) != null)
+                            if (yddEntry != null)
                             {
-                                var ydd = _gameFileCache.GetYdd(GetYddFromHash(entity));
-                                ydd.Load(ydd.RpfFileEntry.File.ExtractFile(ydd.RpfFileEntry), ydd.RpfFileEntry);
-                                mt.YddFiles.Add(ydd);
+                                yddEntry.Load(yddEntry.RpfFileEntry.File.ExtractFile(yddEntry.RpfFileEntry), yddEntry.RpfFileEntry);
+                                mt.YddFiles.Add(yddEntry);
                             }
 
-                            if (_gameFileCache.GetYft(entity) != null)
+                            if (yftEntry != null)
                             {
-                                var yft = _gameFileCache.GetYft(entity);
-                                yft.Load(yft.RpfFileEntry.File.ExtractFile(yft.RpfFileEntry), yft.RpfFileEntry);
-                                mt.YftFiles.Add(yft);
+                                yftEntry.Load(yftEntry.RpfFileEntry.File.ExtractFile(yftEntry.RpfFileEntry), yftEntry.RpfFileEntry);
+                                mt.YftFiles.Add(yftEntry);
                             }
 
                             if (mt.YdrFiles.Count > 0)
@@ -842,12 +849,15 @@ public partial class MainWindow : Window
             case 0:
                 var ymapFile = new YmapFile();
                 ymapFile.Load(File.ReadAllBytes(file));
+                int entityCount = 0;
                 if (ymapFile.AllEntities != null)
                 {
+                    entityCount = ymapFile.AllEntities.Count();
                     hashes.AddRange(ymapFile.AllEntities
                         .Where(entity => entity?._CEntityDef != null)
                         .Select(entity => entity._CEntityDef.archetypeName.Hash));
                 }
+                Console.WriteLine($"[bazq] YMAP Loaded: {Path.GetFileName(file)} | Total Entities: {entityCount} | Unique Archetype Hashes: {hashes.Distinct().Count()}");
                 return hashes.Distinct().ToList();
             case 1:
                 var ytypFile = new YtypFile();
